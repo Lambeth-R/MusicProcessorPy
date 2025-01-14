@@ -9,12 +9,10 @@ import queue
 import sys
 import enum
 
-o_format = ".m4a"
+import ffmpeg
 
-ffmpeg_exe = "ffmpeg.exe"
-exif_exe = "exiftool.exe"
-
-ffmpeg_arg_1 = "-map 0:a -c:a aac"
+exif_exe      = "exiftool.exe"
+g_out_format  = ".m4a"
 g_working_dir = "out"
 
 class DefaultMetaInfo:
@@ -81,16 +79,12 @@ def ExtractCover(songId : int):
     for i in files_list:
         match = pattern.search(i)
         if (match):
-            cmd = " -i "
-            cmd += "\"" + current_dir + "\\" + i + "\""
-            cmd += " -frames:v 1 cover.jpg"
-            async_task_await(ffmpeg_exe, cmd)
-            res = True
+            stream = ffmpeg.input(current_dir + "\\" + match.string)
+            stream = ffmpeg.output(stream, "cover.jpg", **{"frames:v": "1"})
+            ffmpeg.run(stream)
             g_album_info[0].CoverPath = "cover.jpg"
-            break
-    if (res == False):
-        return False
-    return True
+            return True
+    return False
 
 def prepare_meta(schema):
     cover_extraction_required = False
@@ -136,22 +130,29 @@ def add_tags(songId : int):
     current_dir = os.getcwd() + '\\' + g_working_dir
     files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir,f))]
     it = g_album_info[songId]
-    pattern = re.compile(it.TrackName.replace('(',"\\(").replace(')',"\\)").replace('\'',"\'"), re.I)
+
+    track_name = None
+    if (it.ExplicitPath != None):
+        track_name = it.ExplicitPath
+    else:
+        track_name = it.TrackName
+    pattern = re.compile(track_name, re.I)
     for i in files_list:
         match = pattern.search(i)
         if (match):
-            src_path = "\"" + current_dir + '\\' + i + "\""
-            tmp_path = "\"" + current_dir + '\\' + "tmp_" + i + "\""
-            cmd = " -i " + src_path
-            cmd += " -metadata " + " artist=" + "\"" + g_album_info[0].AuthorName + '\"'
-            cmd += " -metadata " + " album=" + "\"" + g_album_info[0].AlbumName + '\"'
-            cmd += " -metadata " + " date=" + "\"" + str(g_album_info[0].Year) + '\"'
-            cmd += " -metadata " + " track=" + "\"" + str(it.TrackId) + '\"'
-            cmd += " -metadata " + " title=" + "\"" + it.TrackName + '\"'
-            cmd += " -c:0 copy " + tmp_path
-            async_task_await(ffmpeg_exe, cmd)
-            os.system("del " + src_path)
-            os.system("move " + tmp_path + ' ' + src_path)
+            src_path = current_dir + '\\' + i
+            tmp_path = current_dir + '\\' + "tmp_" + i
+            stream = ffmpeg.input(src_path)
+            stream = ffmpeg.output(stream, tmp_path,
+            metadata=['artist=' + g_album_info[0].AuthorName,
+                      'album=' + g_album_info[0].AlbumName,
+                      'date=' + str(g_album_info[0].Year),
+                      'track=' + str(it.TrackId),
+                      'title=' + it.TrackName ],
+            **{'c:0': 'copy'})
+            ffmpeg.run(stream)
+            os.system("del " + '\"' + src_path + '\"')
+            os.system("move " + '\"' +tmp_path + '\" \"' + src_path+ '\"')
             res = True
             break
     return True
@@ -168,22 +169,26 @@ def add_cover(songId : int):
     if (os.access(g_working_dir + '\\' + cover_path, os.O_RDONLY) == False):
         shutil.copy(cover_path, g_working_dir + '\\' + cover_path)
 
-    pattern = re.compile(it.TrackName.replace('(',"\\(").replace(')',"\\)"), re.I)
-    res = False
+    track_name = None
+    if (it.ExplicitPath != None):
+        track_name = it.ExplicitPath
+    else:
+        track_name = it.TrackName
+    pattern = re.compile(track_name, re.I)
     for i in files_list:
         match = pattern.search(i)
         if (match):
-            src_path = '\"' + current_dir + '\\' + g_working_dir + '\\' + i + '\"'
-            tmp_path = '\"' + current_dir + '\\' + g_working_dir + '\\' + "tmp_" + i + '\"'
-            cmd = " -i " + src_path
-            cmd += " -i " + '\"' + current_dir + '\\' + g_working_dir + '\\' + cover_path + '\"'
-            cmd += " -map 0 -map 1 -c copy -disposition:1 attached_pic " + tmp_path
-            async_task_await(ffmpeg_exe, cmd)
-            os.system("del " + src_path)
-            os.system("move " + tmp_path + ' ' + src_path)
-            res = True
-            break
-    return True
+            src_path = current_dir + '\\' + g_working_dir + '\\' + match.string
+            tmp_path = current_dir + '\\' + g_working_dir + '\\' + "tmp_" + match.string
+            audio_stream = ffmpeg.input(src_path).audio
+            cover_stream = ffmpeg.input(current_dir + '\\' + g_working_dir + '\\' + cover_path)
+            audio_stream = ffmpeg.output(audio_stream, cover_stream, tmp_path, acodec='copy', 
+                                         **{'c': 'copy', "disposition:1":'attached_pic'})
+            ffmpeg.run(audio_stream)
+            os.system("del " + '\"' + src_path + '\"')
+            os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+            return True
+    return False
 
 def mp3_convert(songId : int):
     current_dir = os.getcwd()
@@ -199,10 +204,9 @@ def mp3_convert(songId : int):
     for i in files_list:
         match = pattern.search(i)
         if (match):
-            cmd = " -i "
-            cmd += "\"" + current_dir + "\\" + match.string + "\" "
-            cmd += ffmpeg_arg_1 + " \"" + current_dir + "\\" + g_working_dir + "\\" + g_album_info[0].AuthorName + ' - ' + it.TrackName + o_format + "\""
-            async_task_await(ffmpeg_exe, cmd)
+            audio_stream = ffmpeg.input(current_dir + "\\" + match.string).audio
+            audio_stream = ffmpeg.output(audio_stream, current_dir + "\\" + g_working_dir + "\\" + g_album_info[0].AuthorName + ' - ' + track_name + g_out_format, acodec='aac')
+            ffmpeg.run(audio_stream)
             return True
     return False
 
@@ -235,7 +239,7 @@ def Executable(cmdFlags: Tasks, songId : int):
     if (cmdFlags & Tasks.Convert):
         if (not mp3_convert(songId)):
             print("Unable to find file from json scheme")
-            return
+            return       
     if (cmdFlags & Tasks.Cover):
         if (not add_cover(songId)):
             print("Failed to add cover")
@@ -243,13 +247,13 @@ def Executable(cmdFlags: Tasks, songId : int):
     if (cmdFlags & Tasks.CopyLyrics):
         if (not copy_lyrics(songId)):
             print("Unable copy lyrics from source file")
-            return
+            return       
     if (cmdFlags & Tasks.Tags):
         if (not add_tags(songId)):
             print("Failed to add track data")
             return
 
-def main(args):
+def converter(args : list):
     convert_task = Tasks.All
     if (len(args) > 1):
         skip_next = False
@@ -270,11 +274,10 @@ def main(args):
     if (not prepare_meta("format.json")):
         print("Convert file isn't a json file")
         return
-    
+
     current_dir = os.getcwd()
     if (not os.path.exists(current_dir + "\\" + g_working_dir)):
         os.mkdir(current_dir + "\\" + g_working_dir)
-        
     pool = ThreadPool(multiprocessing.cpu_count())
     for i in range(len(g_album_info) - 1):
         pool.add_task(Executable, convert_task, i + 1)
@@ -282,5 +285,59 @@ def main(args):
 
     print("Task complete!")
 
+import PyQt5.QtGui
+import PyQt5.QtCore
+import PyQt5.QtWebEngine
+import PyQt5.QtWebEngineWidgets
+
+class QtRendererWarp(PyQt5.QtWebEngineWidgets.QWebEnginePage):
+    def __init__(self, url):  
+        self.html = None
+        self.app = PyQt5.QtWidgets.QApplication(sys.argv)
+        PyQt5.QtWebEngineWidgets.QWebEnginePage.__init__(self)  
+        self.loadFinished.connect(self._loadFinished)
+        self.load(PyQt5.QtCore.QUrl(url))
+        self.app.exec_() 
+
+    def _callable(self, data):
+        self.html = data
+
+    def _loadFinished(self, result):  
+        self.toHtml(self._callable)
+        while self.html is None:
+                self.app.processEvents(PyQt5.QtCore.QEventLoop.ExcludeUserInputEvents | PyQt5.QtCore.QEventLoop.ExcludeSocketNotifiers | PyQt5.QtCore.QEventLoop.WaitForMoreEvents)
+        self.app.quit()
+    
+def downloader(url: str):
+    import pytubefix
+    import bs4
+    base_html = QtRendererWarp(url).html
+    ytb_soup = bs4.BeautifulSoup(base_html, "html5lib")    
+    content_info = {}
+    music_list = ytb_soup.find_all("script")
+    for it in music_list:
+        if type(it.contents) == list and len(it.contents) > 0 and it.contents[0][0:19] == 'var ytInitialData =':
+            content_info = json.decoder.JSONDecoder().decode(it.contents[0][20:-1])
+    
+    content_info = content_info["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]["contents"][0]["playlistVideoListRenderer"]["contents"]
+    base_link = 'http://youtube.com/watch?v='
+    first_hight_res = True
+    output_path = os.getcwd()
+    for i in list (content_info):
+        vid = pytubefix.YouTube(base_link + i["playlistVideoRenderer"]["videoId"])
+        track = vid.streams.get_audio_only()
+        if track:
+            track.download(output_path = output_path)
+        if first_hight_res:
+            first_hight_res = False
+            stream = vid.streams.get_highest_resolution(False)
+            stream.download(output_path = output_path, filename="cover" + stream.default_filename[stream.default_filename.find('.'):])
+    return
+
 if __name__ == "__main__":
-    main(sys.argv)
+    args = sys.argv
+    #Explicit
+    if (len(args) > 2 and args[1] == '--downloader'):
+        downloader(args[2])
+    else:
+        converter(args)
