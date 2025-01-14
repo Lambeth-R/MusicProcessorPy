@@ -8,7 +8,6 @@ import multiprocessing
 import queue
 import sys
 import enum
-
 import ffmpeg
 
 exif_exe      = "exiftool.exe"
@@ -26,6 +25,7 @@ class FileMetainfo(DefaultMetaInfo):
     ExplicitPath      = None
     TrackName         = None
     TrackId           = -1
+    FileName          = ""
 
 g_album_info = list()
 
@@ -120,6 +120,10 @@ def prepare_meta(schema):
                         record.ExplicitCoverPath = sub_rec[key]
                     if (key == "file"):
                         record.ExplicitPath = sub_rec[key]
+                if record.ExplicitPath != None:
+                    record.FileName = record.ExplicitPath
+                else:
+                    record.FileName = g_album_info[0].AuthorName + ' - ' + record.TrackName
             g_album_info.append(record)
     if cover_extraction_required:
         ExtractCover(default_data.CoverPath)
@@ -130,31 +134,19 @@ def add_tags(songId : int):
     current_dir = os.getcwd() + '\\' + g_working_dir
     files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir,f))]
     it = g_album_info[songId]
-
-    track_name = None
-    if (it.ExplicitPath != None):
-        track_name = it.ExplicitPath
-    else:
-        track_name = it.TrackName
-    pattern = re.compile(track_name, re.I)
-    for i in files_list:
-        match = pattern.search(i)
-        if (match):
-            src_path = current_dir + '\\' + i
-            tmp_path = current_dir + '\\' + "tmp_" + i
-            stream = ffmpeg.input(src_path)
-            stream = ffmpeg.output(stream, tmp_path,
-            metadata=['artist=' + g_album_info[0].AuthorName,
-                      'album=' + g_album_info[0].AlbumName,
-                      'date=' + str(g_album_info[0].Year),
-                      'track=' + str(it.TrackId),
-                      'title=' + it.TrackName ],
-            **{'c:0': 'copy'})
-            ffmpeg.run(stream)
-            os.system("del " + '\"' + src_path + '\"')
-            os.system("move " + '\"' +tmp_path + '\" \"' + src_path+ '\"')
-            res = True
-            break
+    src_path = current_dir + '\\' + it.FileName + g_out_format
+    tmp_path = current_dir + '\\' + "tmp_" + it.FileName + g_out_format
+    stream = ffmpeg.input(src_path)
+    stream = ffmpeg.output(stream, tmp_path,
+    metadata=['artist=' + g_album_info[0].AuthorName,
+                'album=' + g_album_info[0].AlbumName,
+                'date=' + str(g_album_info[0].Year),
+                'track=' + str(it.TrackId),
+                'title=' + it.TrackName ],
+    **{'c:0': 'copy'})
+    ffmpeg.run(stream)
+    os.system("del " + '\"' + src_path + '\"')
+    os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
     return True
 
 def add_cover(songId : int):
@@ -168,27 +160,16 @@ def add_cover(songId : int):
         cover_path = g_album_info[0].CoverPath
     if (os.access(g_working_dir + '\\' + cover_path, os.O_RDONLY) == False):
         shutil.copy(cover_path, g_working_dir + '\\' + cover_path)
-
-    track_name = None
-    if (it.ExplicitPath != None):
-        track_name = it.ExplicitPath
-    else:
-        track_name = it.TrackName
-    pattern = re.compile(track_name, re.I)
-    for i in files_list:
-        match = pattern.search(i)
-        if (match):
-            src_path = current_dir + '\\' + g_working_dir + '\\' + match.string
-            tmp_path = current_dir + '\\' + g_working_dir + '\\' + "tmp_" + match.string
-            audio_stream = ffmpeg.input(src_path).audio
-            cover_stream = ffmpeg.input(current_dir + '\\' + g_working_dir + '\\' + cover_path)
-            audio_stream = ffmpeg.output(audio_stream, cover_stream, tmp_path, acodec='copy', 
-                                         **{'c': 'copy', "disposition:1":'attached_pic'})
-            ffmpeg.run(audio_stream)
-            os.system("del " + '\"' + src_path + '\"')
-            os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
-            return True
-    return False
+    src_path = current_dir + '\\' + g_working_dir + '\\' + it.FileName + g_out_format
+    tmp_path = current_dir + '\\' + g_working_dir + '\\' + "tmp_" + it.FileName + g_out_format
+    audio_stream = ffmpeg.input(src_path).audio
+    cover_stream = ffmpeg.input(current_dir + '\\' + g_working_dir + '\\' + cover_path)
+    audio_stream = ffmpeg.output(audio_stream, cover_stream, tmp_path, acodec='copy', 
+                                    **{'c': 'copy', "disposition:1":'attached_pic'})
+    ffmpeg.run(audio_stream)
+    os.system("del " + '\"' + src_path + '\"')
+    os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+    return True
 
 def mp3_convert(songId : int):
     current_dir = os.getcwd()
@@ -307,10 +288,69 @@ class QtRendererWarp(PyQt5.QtWebEngineWidgets.QWebEnginePage):
         while self.html is None:
                 self.app.processEvents(PyQt5.QtCore.QEventLoop.ExcludeUserInputEvents | PyQt5.QtCore.QEventLoop.ExcludeSocketNotifiers | PyQt5.QtCore.QEventLoop.WaitForMoreEvents)
         self.app.quit()
-    
+
+def format_json_sceme(content : dict, playlist : dict):
+    result = list()
+    default_data_list = list()
+    if "title" in playlist: #Custom playlist
+        default_data_list.append({"Author" : ""})
+        default_data_list.append({"Album" : playlist["title"]})
+    else:
+        default_data_list.append({"Author" : playlist[0]["playlistVideoRenderer"]["shortBylineText"]["runs"][0]["text"]})
+        default_data_list.append({"Album" : content["metadata"]["playlistMetadataRenderer"]["title"]})
+    default_data_list.append({"Year" : ""})
+    default_data_list.append({"cover" : "cover.jpg"})
+    result = {"default" : default_data_list} 
+    if "contents" in playlist:
+        playlist = playlist["contents"]
+    for i in list(playlist):
+        order = None
+        name = None
+        if "playlistVideoRenderer" in i :
+            order = i["playlistVideoRenderer"]["index"]["simpleText"]
+            name = i["playlistVideoRenderer"]["title"]["runs"][0]["text"]
+        elif "playlistPanelVideoRenderer" in i:
+            order = i["playlistPanelVideoRenderer"]["indexText"]["simpleText"]
+            name = i["playlistPanelVideoRenderer"]["title"]["simpleText"]
+        if order and name:
+            regex = r"^[ .]|[/<>:\"\\|?*]+|[ .]$"
+            match = re.findall(regex, name)
+            if len(match) > 0:
+                explicit_file = {"file" : re.sub(pattern=regex, repl='', string=name)}
+                track_list = [ name ]
+                track_list.append(explicit_file)
+                result.update({order : track_list})
+            else:
+                result.update({order : [name]})
+    print("Album / playlist scheme generation is complete, don't forget to double check it!")
+    return result
+
+def ProcessCover():
+    current_dir = os.getcwd()
+    files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir ,f))]
+    pattern = re.compile("cover", re.I)
+    cover_processed = False
+    for i in files_list:
+        match = pattern.search(i)
+        if (match):
+            try:
+                stream = ffmpeg.input(current_dir + "\\" + match.string)
+                stream = ffmpeg.output(stream, "cover.jpg", **{"frames:v": "1"})
+                ffmpeg.run(stream)
+                cover_processed = True
+            except:
+                cover_processed = False
+            finally:
+                if cover_processed:
+                    os.system("del " + '\"' + current_dir + "\\" + match.string + '\"')
+    return cover_processed
+
 def downloader(url: str):
     import pytubefix
     import bs4
+    music_pos = url.find('music.youtube')
+    if music_pos > 0:
+        url = url[:music_pos] + url[music_pos + 6:]
     base_html = QtRendererWarp(url).html
     ytb_soup = bs4.BeautifulSoup(base_html, "html5lib")    
     content_info = {}
@@ -318,13 +358,29 @@ def downloader(url: str):
     for it in music_list:
         if type(it.contents) == list and len(it.contents) > 0 and it.contents[0][0:19] == 'var ytInitialData =':
             content_info = json.decoder.JSONDecoder().decode(it.contents[0][20:-1])
-    
-    content_info = content_info["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]["contents"][0]["playlistVideoListRenderer"]["contents"]
+    playlist_data = None
+    if "twoColumnBrowseResultsRenderer" in content_info["contents"]: #Music album
+        playlist_data = content_info["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]["contents"][0]["playlistVideoListRenderer"]["contents"]
+    elif "twoColumnWatchNextResults" in content_info["contents"]: #Custom user playlist
+        playlist_data = content_info["contents"]["twoColumnWatchNextResults"]["playlist"]["playlist"]  
+    scheme = format_json_sceme(content_info, playlist_data)
+    with open("format.json", "wb") as scheme_file:
+        scheme_file.write(json.dumps(scheme, ensure_ascii=False, indent=1).encode())
     base_link = 'http://youtube.com/watch?v='
     first_hight_res = True
     output_path = os.getcwd()
-    for i in list (content_info):
-        vid = pytubefix.YouTube(base_link + i["playlistVideoRenderer"]["videoId"])
+    if "contents" in playlist_data:
+        playlist_data = playlist_data["contents"]
+    for i in list (playlist_data):
+        id_link = None
+        if "playlistVideoRenderer" in i:
+            id_link = i["playlistVideoRenderer"]["videoId"]
+        elif "playlistPanelVideoRenderer" in i:
+            id_link = i["playlistPanelVideoRenderer"]["videoId"]
+        else:
+            print("Failed to parse youtube page...")
+            break
+        vid = pytubefix.YouTube(base_link + id_link)
         track = vid.streams.get_audio_only()
         if track:
             track.download(output_path = output_path)
@@ -332,6 +388,7 @@ def downloader(url: str):
             first_hight_res = False
             stream = vid.streams.get_highest_resolution(False)
             stream.download(output_path = output_path, filename="cover" + stream.default_filename[stream.default_filename.find('.'):])
+            ProcessCover()
     return
 
 if __name__ == "__main__":
