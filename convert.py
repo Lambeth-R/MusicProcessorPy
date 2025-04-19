@@ -151,10 +151,13 @@ def prepare_meta(schema):
                         record.ExplicitCoverPath = sub_rec[key]
                     if (str(key).lower() == "file"):
                         record.ExplicitPath = sub_rec[key]
+                author_prefix = ''
+                if type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0:
+                    author_prefix = g_album_info[0].AuthorName + ' - '
                 if record.ExplicitPath != None:
-                    record.FileName = g_album_info[0].AuthorName + ' - ' + record.ExplicitPath
+                    record.FileName = author_prefix + record.ExplicitPath
                 else:
-                    record.FileName = g_album_info[0].AuthorName + ' - ' + record.TrackName
+                    record.FileName = author_prefix + record.TrackName
             g_album_info.append(record)
     if cover_extraction_required:
         ExtractCover(g_album_info[default_data.CoverPath].FileName)
@@ -169,8 +172,10 @@ def add_tags(songId : int):
     it = g_album_info[songId]
     src_path = current_dir + '\\' + it.FileName + g_out_format
     tmp_path = current_dir + '\\' + "tmp_" + it.FileName + g_out_format
-    author_string = g_album_info[0].AuthorName
-    if type(it.AuthorName) is str and g_album_info[0].AuthorName not in it.AuthorName:
+    author_string = ''
+    if (type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0):
+        author_string += g_album_info[0].AuthorName 
+    if type(it.AuthorName) is str and (len(g_album_info[0].AuthorName) == 0 or g_album_info[0].AuthorName not in it.AuthorName):
         author_string += ', ' + it.AuthorName
     year_str = ""
     if it.Year is not None:
@@ -227,9 +232,12 @@ def mp3_convert(songId : int):
     for i in files_list:
         match = pattern.search(i)
         if (match):
+            author_prefix = ''
+            if type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0:
+                author_prefix = g_album_info[0].AuthorName + ' - '
             audio_stream = ffmpeg.input(current_dir + "\\" + match.string).audio
             audio_stream = ffmpeg.output(audio_stream, current_dir + "\\" + g_working_dir
-                 + "\\" + g_album_info[0].AuthorName + ' - ' + track_name + g_out_format, acodec='aac')
+                 + "\\" + author_prefix + track_name + g_out_format, acodec='aac')
             ffmpeg.run(audio_stream)
             return True
     return False
@@ -423,7 +431,7 @@ def parse_ytb_song(page: bs4.BeautifulSoup) -> tuple[list, dict]:
     default_data_list.update({"Year" : ""})
     default_data_list.update({"cover" : "cover.jpg"})
     result = {"default" : default_data_list}
-    result.update({'1': [list(page.findAll("title"))[0].text]})
+    result.update({'0': [list(page.findAll("title"))[0].text]})
     data =  {"cover_required": True}
     song_link = list(page.findAll("meta", {"property" : "og:url"}))[0].attrs["content"]
     pos = song_link.find("watch?v=")
@@ -511,6 +519,7 @@ def downloader(url: str, schemesPrepared: bool, explicitSchemeName: str | None =
                     stream = vid.streams.get_highest_resolution(False)
                     if stream:
                         cover_vid_name = stream.default_filename
+                        cover_vid_name = cover_vid_name.replace("\"","")
                         stream.download(output_path = output_path, filename=cover_vid_name)
                         ExtractCover(cover_vid_name, scheme["default"]["cover"])
                         os.remove(output_path + '\\' + cover_vid_name)
