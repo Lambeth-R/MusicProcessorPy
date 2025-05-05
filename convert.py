@@ -92,6 +92,9 @@ class ThreadPool:
     def wait_completion(self):
         self.tasks.join()
 
+def replace_forbidden_symbols(string : str):
+    return string.replace('\\','').replace('/','').replace(':','').replace('*','').replace('?','').replace('"','').replace('<','').replace('>','').replace('|','')
+
 def async_task_await(task, cmd):
     os.system(task + cmd)
     process = subprocess.Popen([task, cmd], None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -158,6 +161,7 @@ def prepare_meta(schema):
                     record.FileName = author_prefix + record.ExplicitPath
                 else:
                     record.FileName = author_prefix + record.TrackName
+                record.FileName = replace_forbidden_symbols(record.FileName)
             g_album_info.append(record)
     if cover_extraction_required:
         ExtractCover(g_album_info[default_data.CoverPath].FileName)
@@ -232,12 +236,9 @@ def mp3_convert(songId : int):
     for i in files_list:
         match = pattern.search(i)
         if (match):
-            author_prefix = ''
-            if type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0:
-                author_prefix = g_album_info[0].AuthorName + ' - '
             audio_stream = ffmpeg.input(current_dir + "\\" + match.string).audio
             audio_stream = ffmpeg.output(audio_stream, current_dir + "\\" + g_working_dir
-                 + "\\" + author_prefix + track_name + g_out_format, acodec='aac')
+                 + "\\" + it.FileName + g_out_format, acodec='aac')
             ffmpeg.run(audio_stream)
             return True
     return False
@@ -245,7 +246,7 @@ def mp3_convert(songId : int):
 def Executable(cmdFlags: Tasks, songId : int):
     if (cmdFlags & Tasks.Convert):
         if (not mp3_convert(songId)):
-            print("Unable to find file from json scheme")
+            print("Unable to process song :", songId)
             return       
     if (cmdFlags & Tasks.Cover):
         if (not add_cover(songId)):
@@ -285,7 +286,7 @@ def converter(args : list):
     current_dir = os.getcwd()
     if (not os.path.exists(current_dir + "\\" + g_working_dir)):
         os.mkdir(current_dir + "\\" + g_working_dir)
-    pool = ThreadPool(multiprocessing.cpu_count())
+    pool = ThreadPool(min(multiprocessing.cpu_count(), len(g_album_info) - 1))
     for i in range(len(g_album_info) - 1):
         pool.add_task(Executable, convert_task, i + 1)
     pool.wait_completion()
@@ -361,13 +362,14 @@ def parse_ytb_album(page : bs4.BeautifulSoup) -> tuple[list, dict]:
         elif "complex-string" in i.attrs['class']:
             playlist_data_list.append(i)
             step_count = 3
-    default_data_list.update({"Author" : album_data_list[0].text})
-    default_data_list.update({"Album" : album_data_list[1].text})
-    default_data_list.update({"Year" : album_data_list[2].text}) # Fix with hands C:
+    default_data_list.update({"album" : album_data_list[1].text})
+    default_data_list.update({"author" : album_data_list[0].text})
     default_data_list.update({"cover" : "cover.jpg"})
+    default_data_list.update({"year" : album_data_list[2].text}) # Fix with hands C:
     result = {"default" : default_data_list}
     cover_required = True
-    for i in range(0,len(playlist_data_list), step_count):
+    i = 0
+    while i < len(playlist_data_list):
         # 0 - order
         # 1 - Track Name
         # 2 - Explicit Author (Multiple autors, feats)
@@ -375,7 +377,11 @@ def parse_ytb_album(page : bs4.BeautifulSoup) -> tuple[list, dict]:
         # 4 - Duration (useless)
         # 5 - Nothing?
         order =  playlist_data_list[i].text
-        name  =  playlist_data_list[i + 1].text 
+        name  =  playlist_data_list[i + 1].text
+        if (i + 2) < len(playlist_data_list) and playlist_data_list[i + 2].text.isnumeric():
+            step_count = 2
+        else:
+            step_count = 3
         track_explicit_data = [name] # explicit: author, file, cover
         regex_frbdn_symb = r"^[ .]|[/<>:\"\\|?*]+|[ .]$"
         match = re.findall(regex_frbdn_symb, name)
@@ -391,16 +397,17 @@ def parse_ytb_album(page : bs4.BeautifulSoup) -> tuple[list, dict]:
         data.update({"link": song_link[0:pos]})
         playlist_links.update({order : data})
         cover_required = False
+        i += step_count
     return result, playlist_links
 
 def parse_ytb_playlist(page : dict) -> tuple[list, dict]:
     playlist_links = dict()
     playlist_data = page["contents"]["twoColumnWatchNextResults"]["playlist"]["playlist"]
     default_data_list = list()
-    default_data_list.append({"Author" : ""})
-    default_data_list.append({"Album" : playlist_data["title"]})
-    default_data_list.append({"Year" : ""}) # This is a playlist, universal answer is to add explicit param to each song...
+    default_data_list.append({"author" : ""})
+    default_data_list.append({"album" : playlist_data["title"]})
     default_data_list.append({"cover" : "cover.jpg"})
+    default_data_list.append({"year" : ""}) # This is a playlist, universal answer is to add explicit param to each song...
     result = {"default" : default_data_list}
     explicit_ordering = 1
     for i in list(playlist_data["contents"]):
@@ -426,10 +433,10 @@ def parse_ytb_song(page: bs4.BeautifulSoup) -> tuple[list, dict]:
     for s in page.select('script'):
         s.extract()
     default_data_list = dict()
-    default_data_list.update({"Author" : list(page.findAll("meta", {"property" : "og:video:tag"}))[0].attrs["content"]})
-    default_data_list.update({"Album" : ""})
-    default_data_list.update({"Year" : ""})
+    default_data_list.update({"album" : ""})
+    default_data_list.update({"author" : list(page.findAll("meta", {"property" : "og:video:tag"}))[0].attrs["content"]})
     default_data_list.update({"cover" : "cover.jpg"})
+    default_data_list.update({"year" : ""})
     result = {"default" : default_data_list}
     result.update({'0': [list(page.findAll("title"))[0].text]})
     data =  {"cover_required": True}
@@ -442,10 +449,6 @@ def parse_ytb_song(page: bs4.BeautifulSoup) -> tuple[list, dict]:
 def parse_ytb_page(page : bs4.BeautifulSoup) -> tuple[list, dict] | None:
     renderer = page.find("ytmusic-two-column-browse-results-renderer")
     if renderer is not None:
-        #find sutable diffrence btw album & playlist!
-        #if renderer.find("ytmusic-shelf-renderer"):
-        #    return parse_ytb_playlist(renderer)
-        #else:
         return parse_ytb_album(renderer)
     else:
         return parse_ytb_song(page)
@@ -470,7 +473,56 @@ def prepare_download_schemes(url: str, dump: bool):
     else:
         return scheme, playlist_data
 
-def downloader(url: str, schemesPrepared: bool, explicitSchemeName: str | None = None, explicitPlaylistName: str | None = None):
+def download_track(vid: pytubefix.YouTube, outName: str):
+    output_path = os.getcwd()
+    track = None
+    try:
+        track = vid.streams.get_audio_only()
+    except:
+        type, value, traceback = sys.exc_info()
+        print("Missing track: " + outName + ". Reason: " + value.args[0]) #add exception details
+        return False
+    finally:
+        if track:
+            track.download(output_path = output_path, filename = outName + '.' + track.subtype)
+            return True
+
+def download_cover(vid: pytubefix.YouTube, outName: str):
+    output_path = os.curdir()
+    stream = vid.streams.get_highest_resolution(False)
+    if stream:
+        cover_vid_name = stream.default_filename
+        cover_vid_name = cover_vid_name.replace("\"","")
+        stream.download(output_path = output_path, filename=cover_vid_name)
+        ExtractCover(cover_vid_name, outName)
+        os.remove(output_path + '\\' + cover_vid_name)
+        return True
+    return False
+
+def impl_pyfix_download(url: str, outName: str, coverName: str | None = None):
+    pytubefix.helpers.reset_cache()
+    output_path = os.getcwd()
+    vid = pytubefix.YouTube(url, 'WEB')
+    download_track(vid, outName)
+    if coverName:
+        return download_cover(vid, coverName)
+    return True
+
+def impl_ytdlp_download(url: str, outName: str, coverName: str | None = None):
+    async_task_await("yt-dlp", " -f ba " + url)
+    if coverName:
+        current_dir = os.getcwd()
+        async_task_await("yt-dlp", " -f bv " + url + " -o  temp_vid.%(ext)s")
+        files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir,f))]
+        for file in files_list:
+            if "temp_vid" in file:
+                ExtractCover(file, coverName)
+                os.remove(file)
+                return True
+        return False
+    return True
+
+def downloader(url: str, schemesPrepared: bool, downloadUsingYtDlp: bool, explicitSchemeName: str | None = None, explicitPlaylistName: str | None = None, ):
     scheme = list()
     playlist_data = dict()
     if schemesPrepared:
@@ -490,44 +542,28 @@ def downloader(url: str, schemesPrepared: bool, explicitSchemeName: str | None =
         with open("format.json", "wb") as scheme_file:
             scheme_file.write(json.dumps(scheme, ensure_ascii=False, indent=1).encode())
     base_link = 'http://youtube.com/watch?v='
-    pytubefix.helpers.reset_cache()
-    output_path = os.getcwd()
     for i in playlist_data:
         track_id = playlist_data[i]["link"]
         link = None
         if track_id == None:
             link = url
+        elif 'watch?v=' in track_id:
+            link = base_link[:-8] + track_id
         else:
             link = base_link + track_id
-        vid = pytubefix.YouTube(link, 'WEB' )
-        track = None
-        try:
-            track = vid.streams.get_audio_only()
-        except:
-            type, value, traceback = sys.exc_info()
-            print("Missing track: " + str(i) + ", reason: " + value.args[0]) #add exception details
-            continue
-        finally:
-            if track:
-                filename = ""
-                if len(scheme[i]) > 1 and "file" in scheme[i][1]:
-                    filename = scheme[i][1]["file"]
-                else:
-                    filename = scheme[i][0]
-                track.download(output_path = output_path, filename = filename + '.' + track.subtype)
-                if playlist_data[i] and playlist_data[i] and playlist_data[i]["cover_required"]:
-                    stream = vid.streams.get_highest_resolution(False)
-                    if stream:
-                        cover_vid_name = stream.default_filename
-                        cover_vid_name = cover_vid_name.replace("\"","")
-                        stream.download(output_path = output_path, filename=cover_vid_name)
-                        ExtractCover(cover_vid_name, scheme["default"]["cover"])
-                        os.remove(output_path + '\\' + cover_vid_name)
-                    else:
-                        cover_data = requests.get(playlist_data[i][0])
-                        with open(scheme["default"]["cover"], 'wb') as localFile:
-                            localFile.write(cover_data.content)                       
-    return
+        filename = ""
+        if len(scheme[i]) > 1 and "file" in scheme[i][1]:
+            filename = scheme[i][1]["file"]
+        else:
+            filename = scheme[i][0]
+        cover_name = None
+        if playlist_data[i] and playlist_data[i] and playlist_data[i]["cover_required"]:
+            cover_name = scheme["default"]["cover"]
+
+        if downloadUsingYtDlp:
+            impl_ytdlp_download(link, filename, cover_name)
+        else:
+            impl_pyfix_download(link, filename, cover_name)
 
 class Args(enum.IntFlag):
     Empty       = 0,
@@ -539,21 +575,29 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         converter(sys.argv)
         exit(0)
+
     args_flags = Args.Empty;
-    for it in sys.argv:
-        if it == "-get_modules" or it == "--gm":
-            module_check_skip = False
-        if it == "-prepare_meta" or it == "--pm":
-            args_flags |= Args.PrepareMeta
-        elif it == "-downloader" or it == "--d":
-            args_flags |= Args.Download
-        elif it[0:2] == "--":
-            args_flags = Args.Convert
-    # i don't want to detect url link in prepare stage tbh it just went last
+    download_ytb_dlp = False
+    if "--pm" in sys.argv or "-prepare_meta" in sys.argv:
+        args_flags |= Args.PrepareMeta
+    if "--d" in sys.argv or "-downloader" in sys.argv:
+        args_flags |= Args.Download
+    if "--y" in sys.argv or "-yt-dlp" in sys.argv:
+        download_ytb_dlp = True
+    if args_flags == Args.Empty:
+        args_flags = Args.Convert
     if args_flags & Args.Convert:
         converter(sys.argv)
         exit(0)
     if args_flags & Args.PrepareMeta:
         prepare_download_schemes(sys.argv[len(sys.argv) - 1], True)
     if args_flags & Args.Download:
-        downloader(sys.argv[len(sys.argv) - 1], args_flags & Args.PrepareMeta)
+        url = None
+        for arg in sys.argv:
+            if 'www' in arg or 'http' in arg or 'watch' in arg:
+                url = arg
+                break
+        if url == None:
+            print("No url found to proceed.")
+            exit(0)
+        downloader(url, args_flags & Args.PrepareMeta, download_ytb_dlp)
