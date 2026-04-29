@@ -4,33 +4,6 @@ import sys
 import threading
 import subprocess
 
-def IsModulePresent(module) -> bool:
-    result = True
-    try:
-        import module
-    except ModuleNotFoundError:
-        result = False
-    finally:
-        return result
-
-def ModuleChecker(autoInstall: bool, modules : dict):
-    for name, m in modules:
-        if not IsModulePresent(m):
-            print("Module " + name + " is not present on system")
-            if autoInstall:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', name], stdout=subprocess.DEVNULL)
-
-def CheckBaseModules(autoInstall: bool):
-    modules_map = {
-        "enum":             enum,
-        "python-ffmpeg":    ffmpeg,
-        "multiprocessing":  multiprocessing
-    }
-    ModuleChecker(autoInstall, modules_map)
-
-if (len(sys.argv)) > 2 and ('-module_check' in sys.argv or "--mc" in sys.argv):
-    CheckBaseModules(True)
-
 import re
 import shutil
 import multiprocessing
@@ -76,6 +49,7 @@ class Worker(threading.Thread):
             try:
                 func(*args, **kargs)
             except Exception as e:
+                #func(*args, **kargs)
                 print(e)
             finally:
                 self.tasks.task_done()
@@ -103,18 +77,10 @@ def async_task_await(task, cmd):
 def defineFilename(name : str, id : int, file_list : list) -> str:
     file_name_with_id = None
     file_name_without_id = None
-    pattern = re.compile(name.replace('(',"\\(").replace(')',"\\)").replace('[',"\\[").replace(']',"\\]"), re.I)
-    pattern_id = re.compile((str(id) + '_' + name).replace('(',"\\(").replace(')',"\\)").replace('[',"\\[").replace(']',"\\]"), re.I)
+    pattern_id = '^' + str(id) + '_'
     for f in file_list:
-        if (file_name_with_id is None):
-            match_id = pattern_id.search(f)
-            if match_id:
-                file_name_with_id = f
-        elif file_name_without_id is None:
-            match = pattern.search(f)
-            if match:
-                file_name_without_id = f
-        else:
+        if re.match(pattern_id, f):
+            file_name_with_id = f
             break
     if file_name_with_id is not None:
         return file_name_with_id
@@ -130,7 +96,7 @@ def ExtractCover(filename : str, out : str | None):
     stream = ffmpeg.input(current_dir + "\\" + filename)
     stream = ffmpeg.output(stream, out, **{"frames:v": "1"})
     try:
-        ffmpeg.run(stream)
+        ffmpeg.run(stream, quiet=True)
     except:
         return False
     return True
@@ -143,20 +109,20 @@ def prepare_meta(schema):
         if (rec == "default"):
             #parse Default data
             default_data = FileMetainfo()
-            for sub_rec in album_meta[rec]:
-                if (sub_rec.lower() == "author"):
-                    default_data.AuthorName = album_meta[rec][sub_rec]
+            for key, val in album_meta[rec][0].items():
+                if key == "Author":
+                    default_data.AuthorName = val
                     continue
-                if (sub_rec.lower() == "album"):
-                    default_data.AlbumName = album_meta[rec][sub_rec]
+                if key == "Album":
+                    default_data.AlbumName = val
                     continue
-                if (sub_rec.lower() == "cover"):
-                    default_data.CoverPath = album_meta[rec][sub_rec]
+                if key == "Cover":
+                    default_data.CoverPath = val
                     if (type(default_data.CoverPath) == int):
                         cover_extraction_required = True
                     continue
-                if (sub_rec == "Year" and album_meta[rec][sub_rec] != ''):
-                    default_data.Year = int(album_meta[rec][sub_rec])
+                if key == "Year" and val != '':
+                    default_data.Year = int(val)
                     continue
             g_album_info.append(default_data)
         else:
@@ -164,27 +130,30 @@ def prepare_meta(schema):
             if len(rec) > 0:
                 record.TrackId = int(rec)
             else:
-                record.TrackId = ''
-            for sub_rec in album_meta[rec]:
-                if (type(sub_rec) == str):
-                    record.TrackName = sub_rec
-                if (type(sub_rec) == dict):
-                    #supported cover, file
-                    key = list(sub_rec.keys())[0]
-                    if (str(key).lower() == "author"):
-                        record.AuthorName = sub_rec[key]
-                    if (str(key).lower() == "cover"):
-                        record.ExplicitCoverPath = sub_rec[key]
-                    if (str(key).lower() == "file"):
-                        record.ExplicitPath = sub_rec[key]
-                author_prefix = ''
-                if type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0:
-                    author_prefix = g_album_info[0].AuthorName + ' - '
-                if record.ExplicitPath != None:
-                    record.FileName = author_prefix + record.ExplicitPath
-                else:
-                    record.FileName = author_prefix + record.TrackName
-                record.FileName = replace_forbidden_symbols(record.FileName)
+                record.TrackId = ''            
+            if type(album_meta[rec]) == str:
+                record.TrackName = album_meta[rec]
+            elif type(album_meta[rec]) == list:
+                record.TrackName = album_meta[rec][0]
+                if len(album_meta[rec]) > 1:
+                    for key, val in album_meta[rec][1].items():
+                            if (str(key) == "Author"):
+                                record.AuthorName = val
+                                continue
+                            if (str(key) == "Cover"):
+                                record.ExplicitCoverPath = val
+                                continue
+                            if (str(key) == "File"):
+                                record.ExplicitPath = val
+                                continue
+            author_prefix = ''
+            if type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0:
+                author_prefix = g_album_info[0].AuthorName + ' - '
+            if record.ExplicitPath != None:
+                record.FileName = author_prefix + record.ExplicitPath
+            else:
+                record.FileName = author_prefix + record.TrackName
+            record.FileName = replace_forbidden_symbols(record.FileName)
             g_album_info.append(record)
     if cover_extraction_required:
         ExtractCover(g_album_info[default_data.CoverPath].FileName)
@@ -192,34 +161,62 @@ def prepare_meta(schema):
 
     return len(g_album_info) > 1
 
+def add_single_metadata(name : str, value : str, ipath : str, opath : str):
+    stream  = ffmpeg.input(ipath)
+    stream  = ffmpeg.output(stream, opath, codec='copy', movflags='faststart', metadata = name+'='+value)
+    ffmpeg.run(stream, quiet=True)
+
 def add_tags(songId : int):
     current_dir = os.getcwd() + '\\' + g_working_dir
     files_list = [f for f in os.listdir(current_dir)
         if os.path.isfile(os.path.join(current_dir,f))]
+    
     it = g_album_info[songId]
+
     src_path = current_dir + '\\' + it.FileName + g_out_format
     tmp_path = current_dir + '\\' + "tmp_" + it.FileName + g_out_format
-    author_string = ''
+
+    if g_album_info[0].AlbumName != "" and g_album_info[0].AlbumName != None:
+        add_single_metadata('album', g_album_info[0].AlbumName, src_path, tmp_path)
+        os.system("del " + '\"' + src_path + '\"')
+        os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+
+    if it.TrackName != "" and it.TrackName != None:
+        add_single_metadata('title', it.TrackName, src_path, tmp_path)
+        os.system("del " + '\"' + src_path + '\"')
+        os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+
+    author_string = ""
     if (type(g_album_info[0].AuthorName) is str and len(g_album_info[0].AuthorName) > 0):
-        author_string += g_album_info[0].AuthorName 
+        author_string += g_album_info[0].AuthorName
     if type(it.AuthorName) is str and (len(g_album_info[0].AuthorName) == 0 or g_album_info[0].AuthorName not in it.AuthorName):
-        author_string += ', ' + it.AuthorName
+        author_string += ("" if len(author_string) == 0 else ', ') + it.AuthorName
+
+    if author_string != "" and author_string != None:
+        add_single_metadata('artist', author_string, src_path, tmp_path)
+        os.system("del " + '\"' + src_path + '\"')
+        os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+
+
     year_str = ""
     if it.Year is not None:
         year_str = it.Year
     else:
         year_str = str(g_album_info[0].Year)
-    stream = ffmpeg.input(src_path)
-    stream = ffmpeg.output(stream, tmp_path,
-    metadata= ['artist=' + author_string,
-                'album=' + g_album_info[0].AlbumName,
-                'date='  + year_str,
-                'track=' + str(it.TrackId),
-                'title=' + it.TrackName ],
-    **{'c:0': 'copy'})
-    ffmpeg.run(stream)
-    os.system("del " + '\"' + src_path + '\"')
-    os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+
+    if year_str != "" and year_str != None:
+        add_single_metadata('date', year_str, src_path, tmp_path)
+        os.system("del " + '\"' + src_path + '\"')
+        os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
+
+    track_id = ''
+    if it.TrackId != 0 and it.TrackId != None:
+        track_id = str(it.TrackId)
+
+    if track_id != '' and track_id != None:
+        add_single_metadata('track', str(track_id), src_path, tmp_path)
+        os.system("del " + '\"' + src_path + '\"')
+        os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
     return True
 
 def add_cover(songId : int):
@@ -238,9 +235,8 @@ def add_cover(songId : int):
     tmp_path = current_dir + '\\' + g_working_dir + '\\' + "tmp_" + it.FileName + g_out_format
     audio_stream = ffmpeg.input(src_path).audio
     cover_stream = ffmpeg.input(current_dir + '\\' + g_working_dir + '\\' + cover_path)
-    audio_stream = ffmpeg.output(audio_stream, cover_stream, tmp_path, acodec='copy', 
-                                    **{'c': 'copy', "disposition:1":'attached_pic'})
-    ffmpeg.run(audio_stream)
+    audio_stream = ffmpeg.output(audio_stream, cover_stream, tmp_path, **{'c': 'copy', "disposition:1":'attached_pic'})
+    ffmpeg.run(audio_stream, quiet=True)
     os.system("del " + '\"' + src_path + '\"')
     os.system("move " + '\"' + tmp_path + '\" \"' + src_path+ '\"')
     return True
@@ -255,12 +251,11 @@ def mp3_convert(songId : int):
     else:
         track_name = it.TrackName
     
-    track_name = defineFilename(track_name, songId, files_list)
+    track_name = defineFilename(track_name, it.TrackId, files_list)
     if len(track_name) > 0:
-        audio_stream = ffmpeg.input(current_dir + "\\" + track_name).audio
-        audio_stream = ffmpeg.output(audio_stream, current_dir + "\\" + g_working_dir
-                + "\\" + it.FileName + g_out_format, acodec='aac')
-        ffmpeg.run(audio_stream)
+        audio_stream_in = ffmpeg.input(current_dir + "\\" + track_name).audio
+        audio_stream_out = ffmpeg.output(audio_stream_in, current_dir + "\\" + g_working_dir + "\\" + it.FileName + g_out_format, acodec='aac').audio
+        ffmpeg.run(audio_stream_out)
         return True
     return False
 
@@ -268,7 +263,22 @@ def Executable(cmdFlags: Tasks, songId : int):
     if (cmdFlags & Tasks.Convert):
         if (not mp3_convert(songId)):
             print("Unable to process song :", songId)
-            return       
+            return
+    else:
+        current_dir = os.getcwd()
+        files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir,f))]
+        it = g_album_info[songId]
+        track_name = None
+        if (it.ExplicitPath != None):
+            track_name = it.ExplicitPath
+        else:
+            track_name = it.TrackName
+        track_name = defineFilename(track_name, it.TrackId, files_list)
+        if len(track_name) > 0:
+            src_dir = current_dir + '\\' + track_name
+            out_dir = current_dir + '\\' + g_working_dir + '\\' + it.FileName + g_out_format
+            os.system("copy " + '\"' + src_dir + '\" \"' +  out_dir + '\"')
+
     if (cmdFlags & Tasks.Cover):
         if (not add_cover(songId)):
             print("Failed to add cover")
@@ -307,6 +317,7 @@ def converter(args : list):
     current_dir = os.getcwd()
     if (not os.path.exists(current_dir + "\\" + g_working_dir)):
         os.mkdir(current_dir + "\\" + g_working_dir)
+    #pool = ThreadPool(1)
     pool = ThreadPool(min(multiprocessing.cpu_count(), len(g_album_info) - 1))
     for i in range(len(g_album_info) - 1):
         pool.add_task(Executable, convert_task, i + 1)
@@ -315,7 +326,6 @@ def converter(args : list):
 
 def CheckParserModules(autoInstall: bool):
     modules_map = {
-        "functools":            functools,
         "PyQt5":                PyQt5.QtCore,
         "PyQtWebEngine-Qt5":    PyQt5.QtWebEngineWidgets
     }
@@ -324,34 +334,25 @@ def CheckParserModules(autoInstall: bool):
 if (len(sys.argv)) > 2 and ('-module_check' in sys.argv or "--mc" in sys.argv):
     CheckParserModules(True)
 
-import functools
-import PyQt5.QtCore
-import PyQt5.QtWidgets
-import PyQt5.QtWebEngineWidgets
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QUrl
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 
-class QtRendererWarp(PyQt5.QtWidgets.QWidget, PyQt5.QtWebEngineWidgets.QWebEnginePage):
-
-    @PyQt5.QtCore.pyqtSlot()
-    def HtmlReciever(self, data : str | None):
-        self.html = data
-
-    @PyQt5.QtCore.pyqtSlot()
-    def OnLoadFinished(self, ok : bool):
-        self.enough = ok
-        
+class QtRendererWarp(QWebEngineView):        
     def __init__(self, url):
         self.html = None
-        self.app = PyQt5.QtWidgets.QApplication(sys.argv)       
-        self.browser = PyQt5.QtWebEngineWidgets.QWebEngineView()
-        self.browser.load(PyQt5.QtCore.QUrl(url))
-        self.browser.loadFinished.connect(functools.partial(self.OnLoadFinished))
-        self.page = self.browser.page()
-        self.enough = False
-        while self.enough == False:
-            self.app.processEvents(PyQt5.QtCore.QEventLoop.WaitForMoreEvents)
-        self.browser.page().toHtml(functools.partial(self.HtmlReciever))
-        while self.html == None:
-            self.app.processEvents(PyQt5.QtCore.QEventLoop.WaitForMoreEvents)
+        self.app = QApplication(sys.argv)
+        QWebEngineView.__init__(self)
+        self.loadFinished.connect(self._on_load_finished)
+        self.load(QUrl(url))
+        self.app.exec()
+
+    def _on_load_finished(self):
+        self.page().toHtml(self.callable)
+
+    def callable(self, html_str):
+        self.html = html_str
+        self.app.quit()
 
 def CheckDownloaderModules(autoInstall: bool):
     CheckParserModules(autoInstall)
@@ -372,7 +373,7 @@ import requests
 def FixAdditionalAuthorStr(authors : str, mainAuthor : str) -> str:
     if len(re.findall(mainAuthor, authors)) > 0:
         authors = re.sub(pattern=mainAuthor, repl='', string=authors)
-    regex_concats = r"(and)|(и)|(;)"
+    regex_concats = r"( and)|( и)|(;)"
     if len(re.findall(regex_concats, authors)) > 0:
         authors = re.sub(pattern=regex_concats, repl=',', string=authors)
     if len(authors) == 0:
@@ -382,71 +383,94 @@ def FixAdditionalAuthorStr(authors : str, mainAuthor : str) -> str:
     return authors
 
 def parse_ytb_album(page : bs4.BeautifulSoup) -> tuple[list, dict]:
-    playlist_links = dict()
-    default_data_list = dict()
-    regex = r"[\x00-\x20]"
-    album_data_list = list(page.find("ytmusic-responsive-header-renderer").findAll("yt-formatted-string"))
-    playlist_data = page.find("ytmusic-shelf-renderer").findAll("yt-formatted-string")
-    playlist_data_list = list()
-    step_count = 2
-    for i in playlist_data:
-        if "index" in i.attrs['class'] or "title" in i.attrs['class']:
-            playlist_data_list.append(i)
-        elif "complex-string" in i.attrs['class']:
-            playlist_data_list.append(i)
-            step_count = 3
-    default_data_list.update({"album" : album_data_list[1].text})
-    default_data_list.update({"author" : album_data_list[0].text})
-    default_data_list.update({"cover" : "cover.jpg"})
-    year_str = album_data_list[2].text
+    album_base_data_classname = "ytmusic-responsive-header-renderer"
+    album_list_data_classname = "ytmusic-section-list-renderer"    
+    playlist_links      = dict()
+    default_data_list   = dict()
+    album_data_list     = list()
+    album_track_list    = list()
+
+    primary = None
+    secondary = None
+
+    for c in page.contents:
+        if hasattr(c, "attrs"):
+            if c.attrs["id"] == "primary":
+                primary = c
+            elif c.attrs["id"] == "secondary":
+                secondary = c
+
+    if primary is None or secondary is None:
+        raise Exception("Unable to procceed with missing contents:[primary|secondary] data")
+
+    album_data_list = list(primary.find_all("yt-formatted-string"))
+    album_track_list = list(secondary.find_all("yt-formatted-string"))
+
+    author_div = page.find("ytmusic-responsive-header-renderer").find_all("yt-formatted-string")
+    default_data_list.update({"Author" : author_div[0].attrs['title']})
+    default_data_list.update({"Album" : author_div[1].attrs['title']})
+    default_data_list.update({"Cover" : "cover.jpg"})
+    year_str = author_div[2].attrs['title']
     match = re.findall(r"[12][0-9]{3}", year_str)
     if len(match) > 0:
-        default_data_list.update({"year" : match[0]})
-    result = {"default" : default_data_list}
+        default_data_list.update({"Year" : match[0]})
+    result = {"default" : [default_data_list]}
     cover_required = True
     i = 0
-    while i < len(playlist_data_list):
-        # 0 - order
-        # 1 - Track Name
-        # 2 - Explicit Author (Multiple autors, feats)
-        # 3 - Views (useless)
-        # 4 - Duration (useless)
-        # 5 - Nothing?
-        order =  playlist_data_list[i].text
-        name  =  playlist_data_list[i + 1].text
-        if (i + 2) < len(playlist_data_list) and playlist_data_list[i + 2].text.isnumeric():
-            step_count = 2
-        else:
-            step_count = 3
-        track_explicit_data = [name] # explicit: author, file, cover
+    playlist_links = {}
+    order = 1
+    while i < len(album_track_list):
+        # 0 - Track Name
+        # 1 - Author
+        # 2 - ?
+        # 3 - Track Length
+        # 4 - Check box (ffs)
+        step_over   = 5
+        name        = None
+        author      = None
+        track_obj   = None
+        song_link   = None
+        j = 0
+        while j < step_over and (i + j < len(album_track_list)):
+            track_obj = album_track_list[i + j]
+            if song_link is None and hasattr(track_obj, "attrs") and track_obj.attrs.__contains__("title") and len(track_obj.attrs["title"]) > 0:
+                name        = track_obj.attrs["title"]
+                song_link   = track_obj.find('a').attrs["href"]
+            if hasattr(track_obj, "attrs") and "flex-column" in track_obj.attrs["class"] and len(track_obj.attrs["title"]) > 0 and author is None:
+                author      = track_obj.attrs["title"]
+            j+=1
+        i += j
+        if name is None and song_link is None:
+            continue
+        track_explicit_data = [name]
         regex_frbdn_symb = r"^[ .]|[/<>:\"\\|?*]+|[ .]$"
         match = re.findall(regex_frbdn_symb, name)
         if len(match) > 0:
-            track_explicit_data.append({"file" : re.sub(pattern=regex_frbdn_symb, repl='', string=name)})
-        if i+2 < len(playlist_data_list) and "complex-string" in playlist_data_list[i + 2].attrs['class']:
-            add_authors = FixAdditionalAuthorStr(playlist_data_list[i + 2].text, default_data_list["author"])
-            if len(add_authors) > 0:
-                track_explicit_data.append({"author" : add_authors})
+            track_explicit_data.append({"File" : re.sub(pattern=regex_frbdn_symb, repl='', string=name)})
+        if (author is not None) and (len(author) > 0):
+            explicit_author = FixAdditionalAuthorStr(author, default_data_list["Author"])
+            if len(explicit_author) > 0:
+                track_explicit_data.append({"Author" : explicit_author})
         result.update({order : track_explicit_data})
+
         data = dict()
         data.update({"cover_required": cover_required})
-        song_link = playlist_data_list[i + 1].contents[0].attrs['href']
-        pos = song_link.find("&list=")
-        data.update({"link": song_link[0:pos]})
+        data.update({"link": song_link[0:song_link.find("&list=")]})
         playlist_links.update({order : data})
         cover_required = False
-        i += step_count
+        name = None
+        order += 1
     return result, playlist_links
 
 def parse_ytb_playlist(page : dict) -> tuple[list, dict]:
     playlist_links = dict()
     playlist_data = page["contents"]["twoColumnWatchNextResults"]["playlist"]["playlist"]
-    default_data_list = list()
-    default_data_list.append({"author" : ""})
-    default_data_list.append({"album" : playlist_data["title"]})
-    default_data_list.append({"cover" : "cover.jpg"})
-    default_data_list.append({"year" : ""}) # This is a playlist, universal answer is to add explicit param to each song...
-    result = {"default" : default_data_list}
+    default_data_list = dict()
+    default_data_list.update({"Author" : ""})
+    default_data_list.update({"Album" : playlist_data["title"]})
+    default_data_list.update({"Cover" : "cover.jpg"})
+    default_data_list.update({"Year" : ""}) # This is a playlist, universal answer is to add explicit param to each song...
+    result = {"default" : [default_data_list]}
     explicit_ordering = 1
     for i in list(playlist_data["contents"]):
         order = explicit_ordering
@@ -458,8 +482,8 @@ def parse_ytb_playlist(page : dict) -> tuple[list, dict]:
             track_explicit_data.append({"file" : re.sub(pattern=regex_frbdn_symb, repl='', string=name)})
         add_authors = FixAdditionalAuthorStr(i["playlistPanelVideoRenderer"]["longBylineText"]["runs"][0]["text"], default_data_list["author"])
         if len(add_authors) > 0:
-            track_explicit_data.append({"author" : add_authors})
-        track_explicit_data.append({"year" : ""})
+            track_explicit_data.append({"Author" : add_authors})
+        track_explicit_data.append({"Year" : ""})
         result.update({order : track_explicit_data})
         data_dict = dict()
         data_dict.update({"cover_required": True})
@@ -473,14 +497,14 @@ def parse_ytb_song(page: bs4.BeautifulSoup) -> tuple[list, dict]:
     for s in page.select('script'):
         s.extract()
     default_data_list = dict()
-    default_data_list.update({"album" : ""})
-    default_data_list.update({"author" : list(page.findAll("meta", {"property" : "og:video:tag"}))[0].attrs["content"]})
-    default_data_list.update({"cover" : "cover.jpg"})
-    default_data_list.update({"year" : ""})
-    result = {"default" : default_data_list}
-    result.update({'0': [list(page.findAll("title"))[0].text]})
+    default_data_list.update({"Album" : ""})
+    default_data_list.update({"Author" : list(page.find_all("meta", {"property" : "og:video:tag"}))[0].attrs["content"]})
+    default_data_list.update({"Cover" : "cover.jpg"})
+    default_data_list.update({"Year" : ""})
+    result = {"default" : [default_data_list]}
+    result.update({'0': [list(page.find_all("title"))[0].text]})
     data =  {"cover_required": True}
-    song_link = list(page.findAll("meta", {"property" : "og:url"}))[0].attrs["content"]
+    song_link = list(page.find_all("meta", {"property" : "og:url"}))[0].attrs["content"]
     pos = song_link.find("watch?v=")
     data.update({"link": song_link[pos+8:]})
     playlist_links.update({'0' : data})
@@ -503,6 +527,8 @@ def prepare_download_schemes(url: str, dump: bool):
     else:
         refind_url = "https://www.youtube.com/watch?v" + url[unique_link_offset:]
     base_html = QtRendererWarp(refind_url).html
+    #with open("yt_page.html", "wb") as html_drop_page:
+    #    html_drop_page.write(base_html.encode())
     ytb_soup = bs4.BeautifulSoup(base_html, 'html.parser')
     scheme, playlist_data = parse_ytb_page(ytb_soup)
     if dump:
@@ -516,16 +542,18 @@ def prepare_download_schemes(url: str, dump: bool):
 def download_track(vid: pytubefix.YouTube, outName: str):
     output_path = os.getcwd()
     track = None
+    result = False
     try:
         track = vid.streams.get_audio_only()
     except:
         type, value, traceback = sys.exc_info()
         print("Missing track: " + outName + ". Reason: " + value.args[0]) #add exception details
-        return False
+        result = False
     finally:
         if track:
             track.download(output_path = output_path, filename = outName + '.' + track.subtype)
-            return True
+            result = True
+    return result
 
 def download_cover(vid: pytubefix.YouTube, outName: str):
     output_path = os.curdir()
@@ -549,16 +577,17 @@ def impl_pyfix_download(url: str, outName: str, coverName: str | None = None):
     return True
 
 def impl_ytdlp_download(url: str, outName: str, coverName: str | None = None):
-    async_task_await("yt-dlp", " -f ba " + url + " -o \"" + outName + "\".%(ext)s")
+    async_task_await("yt-dlp", " -S acodec:m4a " + url + " -o \"" + outName + "\".%(ext)s")
     if coverName:
         current_dir = os.getcwd()
         async_task_await("yt-dlp", " -f bv " + url + " -o  temp_vid.%(ext)s")
         files_list = [f for f in os.listdir(current_dir) if os.path.isfile(os.path.join(current_dir,f))]
         for file in files_list:
             if "temp_vid" in file:
-                ExtractCover(file, coverName)
-                os.remove(file)
-                return True
+                if ExtractCover(file, coverName) == True:
+                    os.remove(file)
+                    return True
+                break
         return False
     return True
 
@@ -593,13 +622,13 @@ def downloader(url: str, schemesPrepared: bool, downloadUsingYtDlp: bool, explic
         else:
             link = base_link + track_id
         filename = ""
-        if len(scheme[i]) > 1 and "file" in scheme[i][1]:
-            filename = scheme[i][1]["file"]
+        if len(scheme[i]) > 1 and "File" in scheme[i][1]:
+            filename = scheme[i][1]["File"]
         else:
             filename = scheme[i][0]
         cover_name = None
         if playlist_data[i] and playlist_data[i] and playlist_data[i]["cover_required"]:
-            cover_name = scheme["default"]["cover"]
+            cover_name = scheme["default"][0]["Cover"]
         if downloadUsingYtDlp:
             pool.add_task(impl_ytdlp_download, link, str(i) + '_' + filename, cover_name)
         else:
